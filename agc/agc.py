@@ -22,6 +22,7 @@ import textwrap
 from pathlib import Path
 from collections import Counter
 from typing import Iterator, Dict, List
+
 # https://github.com/briney/nwalign3
 # ftp://ftp.ncbi.nih.gov/blast/matrices/
 import nwalign3 as nw
@@ -34,7 +35,6 @@ __version__ = "1.0.0"
 __maintainer__ = "Your Name"
 __email__ = "your@email.fr"
 __status__ = "Developpement"
-
 
 
 def isfile(path: str) -> Path:  # pragma: no cover
@@ -56,23 +56,63 @@ def isfile(path: str) -> Path:  # pragma: no cover
     return myfile
 
 
-def get_arguments(): # pragma: no cover
+def get_arguments():  # pragma: no cover
     """Retrieves the arguments of the program.
 
     :return: An object that contains the arguments
     """
     # Parsing arguments
-    parser = argparse.ArgumentParser(description=__doc__, usage=
-                                     "{0} -h"
-                                     .format(sys.argv[0]))
-    parser.add_argument('-i', '-amplicon_file', dest='amplicon_file', type=isfile, required=True, 
-                        help="Amplicon is a compressed fasta file (.fasta.gz)")
-    parser.add_argument('-s', '-minseqlen', dest='minseqlen', type=int, default = 400,
-                        help="Minimum sequence length for dereplication (default 400)")
-    parser.add_argument('-m', '-mincount', dest='mincount', type=int, default = 10,
-                        help="Minimum count for dereplication  (default 10)")
-    parser.add_argument('-o', '-output_file', dest='output_file', type=Path,
-                        default=Path("OTU.fasta"), help="Output file")
+    parser = argparse.ArgumentParser(
+        description=__doc__, usage="{0} -h".format(sys.argv[0])
+    )
+    parser.add_argument(
+        "-i",
+        "-amplicon_file",
+        dest="amplicon_file",
+        type=isfile,
+        required=True,
+        help="Amplicon is a compressed fasta file (.fasta.gz)",
+    )
+    parser.add_argument(
+        "-s",
+        "-minseqlen",
+        dest="minseqlen",
+        type=int,
+        default=400,
+        help="Minimum sequence length for dereplication (default 400)",
+    )
+    parser.add_argument(
+        "-m",
+        "-mincount",
+        dest="mincount",
+        type=int,
+        default=10,
+        help="Minimum count for dereplication  (default 10)",
+    )
+    parser.add_argument(
+        "-c",
+        "-chunk_size",
+        dest="chunk_size",
+        type=int,
+        default=100,
+        help="Chunk size for dereplication (default 100)",
+    )
+    parser.add_argument(
+        "-k",
+        "-kmer_size",
+        dest="kmer_size",
+        type=int,
+        default=8,
+        help="kmer size for dereplication (default 8)",
+    )
+    parser.add_argument(
+        "-o",
+        "-output_file",
+        dest="output_file",
+        type=Path,
+        default=Path("OTU.fasta"),
+        help="Output file",
+    )
     return parser.parse_args()
 
 
@@ -83,10 +123,25 @@ def read_fasta(amplicon_file: Path, minseqlen: int) -> Iterator[str]:
     :param minseqlen: (int) Minimum amplicon sequence length
     :return: A generator object that provides the Fasta sequences (str).
     """
-    pass
+    with gzip.open(amplicon_file, "rt") as fichier:
+        sequence = ""
+        for ligne in fichier:
+            ligne = ligne.strip()
+            if ligne.startswith(">"):
+                # on change de séquence, on renvoie la précédente
+                if len(sequence) >= minseqlen:
+                    yield sequence
+                sequence = ""
+            else:
+                sequence = sequence + ligne
+        # la dernière séquence du fichier
+        if len(sequence) >= minseqlen:
+            yield sequence
 
 
-def dereplication_fulllength(amplicon_file: Path, minseqlen: int, mincount: int) -> Iterator[List]:
+def dereplication_fulllength(
+    amplicon_file: Path, minseqlen: int, mincount: int
+) -> Iterator[List]:
     """Dereplicate the set of sequence
 
     :param amplicon_file: (Path) Path to the amplicon file in FASTA.gz format.
@@ -94,7 +149,12 @@ def dereplication_fulllength(amplicon_file: Path, minseqlen: int, mincount: int)
     :param mincount: (int) Minimum amplicon count
     :return: A generator object that provides a (list)[sequences, count] of sequence with a count >= mincount and a length >= minseqlen.
     """
-    pass
+    compteur = Counter(read_fasta(amplicon_file, minseqlen))
+    # most_common() renvoie déjà tout par ordre décroissant d'occurrence
+    for sequence, count in compteur.most_common():
+        if count >= mincount:
+            yield [sequence, count]
+
 
 def get_identity(alignment_list: List[str]) -> float:
     """Compute the identity rate between two sequences
@@ -102,9 +162,17 @@ def get_identity(alignment_list: List[str]) -> float:
     :param alignment_list:  (list) A list of aligned sequences in the format ["SE-QUENCE1", "SE-QUENCE2"]
     :return: (float) The rate of identity between the two sequences.
     """
-    pass
+    identiques = 0
+    longueur = len(alignment_list[0])
+    for i in range(longueur):
+        if alignment_list[0][i] == alignment_list[1][i]:
+            identiques += 1
+    return identiques / longueur * 100
 
-def abundance_greedy_clustering(amplicon_file: Path, minseqlen: int, mincount: int, chunk_size: int, kmer_size: int) -> List:
+
+def abundance_greedy_clustering(
+    amplicon_file: Path, minseqlen: int, mincount: int, chunk_size: int, kmer_size: int
+) -> List:
     """Compute an abundance greedy clustering regarding sequence count and identity.
     Identify OTU sequences.
 
@@ -115,7 +183,22 @@ def abundance_greedy_clustering(amplicon_file: Path, minseqlen: int, mincount: i
     :param kmer_size: (int) A fournir mais non utilise cette annee
     :return: (list) A list of all the [OTU (str), count (int)] .
     """
-    pass
+    otu_list = []
+    matrice = str(Path(__file__).parent / "MATCH")
+    # les séquences arrivent déjà par ordre décroissant d'abondance
+    for sequence, count in dereplication_fulllength(amplicon_file, minseqlen, mincount):
+        est_otu = True
+        for otu in otu_list:
+            alignement = nw.global_align(
+                sequence, otu[0], gap_open=-1, gap_extend=-1, matrix=matrice
+            )
+            if get_identity(alignement) > 97:
+                # trop proche d'une séquence plus abondante, ce n'est pas une OTU
+                est_otu = False
+                break
+        if est_otu:
+            otu_list.append([sequence, count])
+    return otu_list
 
 
 def write_OTU(OTU_list: List, output_file: Path) -> None:
@@ -124,21 +207,33 @@ def write_OTU(OTU_list: List, output_file: Path) -> None:
     :param OTU_list: (list) A list of OTU sequences
     :param output_file: (Path) Path to the output file
     """
-    pass
+    with open(output_file, "w") as fichier:
+        numero = 1
+        for sequence, count in OTU_list:
+            fichier.write(f">OTU_{numero} occurrence:{count}\n")
+            fichier.write(textwrap.fill(sequence, width=80) + "\n")
+            numero += 1
 
 
-#==============================================================
+# ==============================================================
 # Main program
-#==============================================================
-def main(): # pragma: no cover
+# ==============================================================
+def main():  # pragma: no cover
     """
     Main program function
     """
     # Get arguments
     args = get_arguments()
     # Votre programme ici
+    otu_list = abundance_greedy_clustering(
+        args.amplicon_file,
+        args.minseqlen,
+        args.mincount,
+        args.chunk_size,
+        args.kmer_size,
+    )
+    write_OTU(otu_list, args.output_file)
 
 
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
